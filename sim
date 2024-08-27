@@ -1,0 +1,144 @@
+import os
+from torchvision import datasets, transforms
+from torch.utils.data import DataLoader, Subset
+import numpy as np
+
+seed = 42
+np.random.seed(seed)
+torch.manual_seed(seed)
+
+# 画像の変換を定義
+transform = transforms.Compose([
+    transforms.ToTensor(),  # テンソルに変換
+    # 必要に応じて他の変換を追加
+])
+
+# ルートディレクトリを指定
+root_dir = '/path/to/root'  # ここを実際のパスに置き換えてください
+
+# ImageFolderデータセットを作成
+dataset = datasets.ImageFolder(root=root_dir, transform=transform)
+
+# 各フォルダから10枚ずつのインデックスを取得
+subset_indices = []
+for class_idx in range(len(dataset.classes)):
+    class_indices = np.where(np.array(dataset.targets) == class_idx)[0]
+    chosen_indices = np.random.choice(class_indices, 10, replace=False)
+    subset_indices.extend(chosen_indices)
+
+# Subsetを作成
+subset = Subset(dataset, subset_indices)
+
+project_directory/
+│
+├── config/
+│   ├── config.yaml    # メインの設定ファイル
+│   └── model/         # モデル関連の設定ファイル
+│       └── simclr.yaml
+├── simclr_module.py   # SimCLRのモデルクラス
+└── train.py           # トレーニングスクリプト
+
+config/config.yaml
+defaults:
+  - model: simclr
+
+model:
+  _target_: simclr_module.SimCLR
+  lr: 0.001
+  temperature: 0.5
+
+trainer:
+  max_epochs: 100
+  gpus: 1
+
+data:
+  batch_size: 128
+  dataset_path: "/path/to/dataset"
+
+config/model/simsiam.yaml
+backbone:
+  type: resnet50
+  pretrained: false
+projection_head:
+  input_dim: 2048
+  hidden_dim: 2048
+  output_dim: 128
+
+simclr_module.py
+
+import torch
+import torch.nn as nn
+import torchvision
+import pytorch_lightning as pl
+from omegaconf import OmegaConf
+
+class SimCLR(pl.LightningModule):
+    def __init__(self, backbone, projection_head, lr, temperature):
+        super().__init__()
+        resnet = getattr(torchvision.models, backbone['type'])(pretrained=backbone['pretrained'])
+        self.backbone = nn.Sequential(*list(resnet.children())[:-1])
+        self.projection_head = nn.Sequential(
+            nn.Linear(projection_head['input_dim'], projection_head['hidden_dim']),
+            nn.ReLU(),
+            nn.Linear(projection_head['hidden_dim'], projection_head['output_dim'])
+        )
+        self.criterion = nn.CrossEntropyLoss()
+        self.lr = lr
+        self.temperature = temperature
+
+    def forward(self, x):
+        h = self.backbone(x).flatten(start_dim=1)
+        z = self.projection_head(h)
+        return z
+
+    def training_step(self, batch, batch_idx):
+        (x0, x1), _ = batch
+        z0 = self.forward(x0)
+        z1 = self.forward(x1)
+        logits = self.compute_logits(z0, z1)
+        labels = torch.arange(len(x0)).cuda()  # Positive pairs across the batch
+        loss = self.criterion(logits / self.temperature, labels)
+        return loss
+
+    def configure_optimizers(self):
+        optim = torch.optim.Adam(self.parameters(), lr=self.lr)
+        return optim
+
+    def compute_logits(self, z0, z1):
+        z0_norm = nn.functional.normalize(z0, dim=1)
+        z1_norm = nn.functional.normalize(z1, dim=1)
+        return torch.matmul(z0_norm, z1_norm.T)
+import hydra
+from omegaconf import DictConfig, OmegaConf
+import pytorch_lightning as pl
+from pytorch_lightning import Trainer
+from simclr_module import SimCLR
+from torchvision import datasets, transforms
+from torch.utils.data import DataLoader
+
+@hydra.main(config_path="config", config_name="config")
+def train_model(cfg: DictConfig):
+    print(OmegaConf.to_yaml(cfg))
+    
+    transform = transforms.Compose([
+        transforms.RandomResizedCrop(224),
+        transforms.RandomHorizontalFlip(),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+    ])
+
+    train_dataset = datasets.ImageFolder(root=cfg.data.dataset_path, transform=transform)
+    train_loader = DataLoader(train_dataset, batch_size=cfg.data.batch_size, shuffle=True)
+
+    model = SimCLR(
+        backbone=cfg.model.backbone,
+        projection_head=cfg.model.projection_head,
+        lr=cfg.model.lr,
+        temperature=cfg.model.temperature
+    )
+    
+    trainer = Trainer(max_epochs=cfg.trainer.max_epochs, gpus=cfg.trainer.gpus)
+    trainer.fit(model, train_loader)
+
+if __name__ == "__main__":
+    train_model()
