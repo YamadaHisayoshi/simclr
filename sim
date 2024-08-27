@@ -18,7 +18,7 @@ root_dir = '/path/to/root'  # ここを実際のパスに置き換えてくだ�
 
 # ImageFolderデータセットを作成
 dataset = datasets.ImageFolder(root=root_dir, transform=transform)
-
+dataloader = DataLoader(subset, batch_size=32, shuffle=True)
 # 各フォルダから10枚ずつのインデックスを取得
 subset_indices = []
 for class_idx in range(len(dataset.classes)):
